@@ -1,0 +1,446 @@
+#!/bin/bash
+############################################
+# If dcfldd is installed you will get a    #
+# progress indicator when dumping to USB   #
+############################################
+# Enter a few variables.                   #
+# location is where you stored the ISOs    #
+# release is the directory on the server   #
+# user is the rsync login username         #
+# password is the rsync password           #
+############################################
+
+location=""
+release=""
+user=""
+password=""
+
+############################################
+# To exclude directories from sync, create #
+# a file, dorsync.skip in the start folder #         #
+# containing the directory names only, one #
+# per line.                                #
+############################################
+
+####### Don't touch below this line ########
+#                                          #
+############################################
+#              dorsync v2.8                #
+############################################
+#          Claire Robinson (MrsB)          #
+#             for Mageia QA                #
+############################################
+#            Thanks also go to..           #
+#        Alfred Kretschmer (alfred)        #
+#        Barry Jackson (barjac)            #
+############################################
+
+red='\e[0;31m'
+green='\e[0;32m'
+bold='\e[01m'
+endcolour='\e[0m'
+rsyncargs=()
+rsyncargs+=" -avHP"
+if [[ -e dorsync.skip ]]; then
+  while read line; do
+  rsyncargs+=" --exclude=$line"
+  done < dorsync.skip
+fi
+rsyncargs+=" rsync://$user@bcd.mageia.org/isos/$release/ ."
+cd "$location"
+# Gap so I remember to add command line arguments
+
+# Function to do the actual rsync and run checks afterwards
+dorsync () {
+echo "Starting rsync.."
+RSYNC_PASSWORD="$password" rsync ${rsyncargs[@]}
+OUT=$?
+echo ""
+if [ $OUT -eq 0 ];then
+   echo "Completed rsync"
+else
+   echo "Rsync failed. Exiting."
+   exit
+fi
+
+echo ""
+du -h | sort -k 2 | sed "s|\./||" | sed -e "s|\(\s\)\.|\1Total\n|"
+echo ""
+echo "Starting checks, please ensure the dates are correct"
+echo ""
+# Loop through folders in $location and read info into arrays
+# Hopefully able to use this later to dump to USB stick
+# Perform checks too and highlight green OK red Failed
+i=0
+OIFS="$IFS"
+IFS=$'\n'
+for line in $(find . -type f -name "*.iso" -printf '%P\n')
+do
+  directory[$i]=`dirname "$line"`
+  iso[$i]=`basename "$line"`
+  echo "PATH: ${directory[$i]}"
+  echo "ISO:  ${iso[$i]}"
+  cd "${directory[$i]}"
+  # Check for DATE.txt and display it or warn if missing
+  if [ -e DATE.txt ]
+  then
+    echo "DATE: `cat DATE.txt`"
+    missingdate[$i]=false
+  else
+    echo -e "DATE: ${red}Missing${endcolour}"
+    missingdate[$i]=true
+  fi
+  # Check for md5 file and then md5sum it or warn if missing
+  if [ -e "${iso[$i]}.md5" ]
+  then
+    md5sum -c --quiet --status *.md5 2>/dev/null
+    OUT=$?
+    if [ $OUT -eq 0 ];then
+      echo -e "MD5:  ${green}OK${endcolour}     \c"
+      md5ok[$i]=true
+      missingmd5[$i]=false
+    else
+      echo -e "MD5:  ${red}Failed${endcolour}     \c"
+      md5ok[$i]=false
+      missingmd5[$i]=false
+    fi
+  else
+    echo -e "MD5:  ${red}Missing${endcolour}     \c"
+    missingmd5[$i]=true
+  fi
+
+  # Check for sha1 file and then sha1sum it or warn if missing
+  if [ -e ${iso[$i]}.sha1 ]
+  then
+    sha1sum -c --quiet --status *.sha1 2>/dev/null
+    OUT=$?
+    if [ $OUT -eq 0 ];then
+      echo -e "SHA1: ${green}OK${endcolour}"
+      sha1ok[$i]=true
+      missingsha1[$i]=false
+    else
+      echo -e "SHA1: ${red}Failed${endcolour}"
+      sha1ok[$i]=false
+      missingsha1[$i]=false
+    fi
+  else
+    echo -e "SHA1: ${red}Missing${endcolour}"
+    sha1ok[$i]=false
+    missingsha1[$i]=true
+  fi
+  echo ""
+  cd "$location"
+  (( i++ ))
+done
+IFS="$OIFS"
+# Check if anything failed and provide a summary
+total=${#directory[@]}
+warnings=0
+startwarning="--------------------------------------------------\n${bold}Warning:${endcolour}\n"
+for (( i=0; i<=$(( $total -1 )); i++ )) 
+do
+  # Warn of missing DATE.txt files
+  if [ ${missingdate[$i]} = true ]
+  then
+    if [ $warnings = 0 ]
+    then
+      echo -e $startwarning
+    fi
+    echo "${directory[$i]}/DATE.txt missing"
+    (( warnings++ ))
+  fi
+  # Warn of missing md5 files 
+  if [ ${missingmd5[$i]} = true ]
+  then
+    if [ $warnings = 0 ]
+    then
+      echo -e $startwarning
+    fi
+    echo "${directory[$i]}/${iso[$i]}.md5 missing"
+    (( warnings++ ))
+  else
+    # Warn of bad md5sum if present
+    if [ ${md5ok[$i]} = false ]
+    then
+      if [ $warnings = 0 ]
+      then
+        echo -e $startwarning
+      fi
+      echo "${iso[$i]} md5sum failed"
+      (( warnings++ ))
+    fi
+  fi
+  # Warn of missing sha1 files
+  if [ ${missingsha1[$i]} = true ]
+  then
+    if [ $warnings = 0 ]
+    then
+      echo -e $startwarning
+    fi
+    echo "${directory[$i]}/${iso[$i]}.sha1 missing"
+    (( warnings++ ))
+  else
+    # Warn of bad sha1sum if present
+    if [ ${sha1ok[$i]} = false ]
+    then
+      if [ $warnings = 0 ]
+      then
+        echo -e $startwarning
+      fi
+      echo "${iso[$i]} sha1sum failed"
+      (( warnings++ ))
+    fi
+  fi
+done
+echo ""
+# If anything failed, provide a count
+if [ $warnings != 0 ]
+then
+  if [ $warnings -gt 1 ]
+  then
+    message="There are $warnings potential problems."
+  else
+    message="There is 1 potential problem."
+  fi
+  echo -e "${bold}$message${endcolour}"
+  echo "--------------------------------------------------"
+else
+  echo "------------------------------------"
+  echo ""
+  echo -e "${bold}All tests passed OK. Yippee!${endcolour}"
+  echo "Please check the dates are correct."
+  echo ""
+  echo "------------------------------------"
+fi
+
+}
+
+
+# Function to list USB sticks
+liststicks () {
+  usbs=""
+  for device in /sys/block/*/device
+  do
+    if echo $(readlink -f $device)|egrep -q "usb"
+    then
+      adisk=`echo $device | cut -f4 -d/`
+      usbs="$usbs /dev/$adisk"
+    fi
+  done
+
+  # Find info for each from udisks
+  i=0
+  for usb in $usbs
+  do
+    showinfo=`udisks --show-info $usb`
+    isremovable=`echo "$showinfo" | grep "  removable:"| cut -f2 -d: | sed 's/^[ ]*//'`
+
+    # Check udisks shows it as removable
+    if [ $isremovable = 1 ]
+    then
+      usbdev[$i]="$usb"
+      found[$i]=`echo "$showinfo" | grep "  detected at:"| cut -f2- -d: | sed 's/^[ ]*//'`
+      vendor[$i]=`echo "$showinfo" | grep "vendor:" | cut -f2 -d: | sed 's/^[ ]*//'`
+      model[$i]=`echo "$showinfo" | grep "model:" | cut -f2 -d: | sed 's/^[ ]*//'`
+      sizebytes[$i]=`echo "$showinfo" | grep "  size:" | cut -f2 -d: | sed 's/^[ ]*//'`
+      sizegb[$i]=`echo "scale=1;${sizebytes[$i]}/1024/1024/1024" | bc`
+      (( i++ ))
+    fi
+  done
+}
+
+
+# Minimal function to find isos if rsync is skipped
+findisos () {
+  i=0
+  OIFS="$IFS"
+  IFS=$'\n'
+  for line in $(find . -type f -name "*.iso" -printf '%P\n')
+  do
+    directory[$i]=`dirname "$line"`
+    iso[$i]=`basename "$line"`
+    (( i++ ))
+  done
+  IFS="$OIFS"
+}
+
+
+# Function to wait for usb stick to be inserted
+dodoh () {
+  while true
+  do
+    echo "No USB drives found. Please insert one now."
+    read -n1 -e -p "Press Q to quit or any other key to continue: " num
+    case $num in
+      [Qq]* ) exit;;
+      * ) liststicks
+	  echo ""
+	  if ! [ ${#found[@]} = 0 ]
+	  then
+	    doh="Yay"
+	    break
+	  fi
+	  ;;
+    esac
+  done
+}
+
+
+# Function to actually do the dump onto usb
+dothedeed () {
+  echo ""
+  echo "Please be patient this can take a while"
+  echo ""
+  echo "This operation requires root privileges"
+  echo "Please enter your root password.."
+  echo ""
+  export rootwhere="${usbdev[$(($usbchoice-1))]}"
+  export rootiso="$fullisopath"
+  if [ -e /usr/bin/dcfldd ]
+  then
+    su -c 'dcfldd sizeprobe=if statusinterval=5 if="$rootiso" of="$rootwhere" bs=1M && sync'
+  else
+    su -c 'dd if="$rootiso" of="$rootwhere" bs=1M && sync'
+  fi
+  OUT=$?
+  echo ""
+  if [ $OUT -eq 0 ];then
+    echo "Completed OK."
+  else
+    echo "Failed. Exiting."
+    exit
+  fi
+}
+
+# Function to choose usb stick & iso and check it'll fit
+dodump () {
+  echo ""
+  didrsync=$1
+  if [ $didrsync == 1 ]
+  then
+    # Ask to dump to USB or exit
+    echo ""
+    while true
+    do
+      read -n1 -e -p "Do you want to dump one onto USB? [y/n]" yn
+      case $yn in
+	[Yy] ) liststicks
+		break;;
+	[Nn] ) exit;;
+	   * ) echo "Please choose y or n";;
+      esac
+    done
+    echo ""
+  else
+    liststicks
+  fi
+
+  # If no USBs found D'oh! loop until there is one..
+  total=${#found[@]}
+  if [ $total = 0 ]
+  then
+    doh="doh"
+    while [ "$doh" = "doh" ]
+    do
+      dodoh
+    done
+    total=${#found[@]}
+  fi
+
+  # Now there is a USB print the info
+  for (( i=0; i<=$(( $total -1 )); i++ ))
+  do
+    if [ $i = 0 ]
+    then
+      echo ""
+      echo "USB drives found:"
+      echo ""
+      echo -e "    Device\tSize\tWhen Found\t\t\tModel"
+    fi
+    echo -e "$((i+1))) ${usbdev[$i]}\t${sizegb[$i]}Gb\t${found[$i]}\t${vendor[$i]} ${model[$i]}"
+  done
+
+  # Choose which USB to use
+echo ""
+  while true
+  do
+  read -e -p "Please choose which USB to use or Q to quit and press <enter>: " usbchoice
+   if [[ $usbchoice = [Qq] ]]; then 
+   exit
+   elif [[ "$usbchoice" =~ ^[0-9]+$ ]] && (( $usbchoice <= $total )) && (( $usbchoice > 0 )); then 
+   break
+   else echo "Invalid selection"
+   fi
+  done
+  
+  # List the ISOs
+  total=${#iso[@]}
+  for (( i=0; i<=$(( $total -1 )); i++ ))
+  do
+    if [ $i = 0 ]
+    then
+      echo ""
+      echo "List of ISOs:"
+    fi
+    echo "$(($i+1))) ${iso[$i]}"
+  done
+  echo ""
+
+  # Choose which ISO to use
+  while true
+  do
+   read -e -p "Please choose which ISO to use or Q to quit and press <enter>: " isochoice
+   if [[ $isochoice = [Qq] ]]; then 
+   exit
+   elif [[ "$isochoice" =~ ^[0-9]+$ ]] && (( $isochoice <= $total )) && (( $isochoice > 0 )); then 
+   break
+   else echo "Invalid selection"
+   fi
+  done
+
+  # Will it fit?
+  fullisopath=`readlink -f "${directory[$(($isochoice-1))]}/${iso[$(($isochoice-1))]}"`
+  isosize=`du -b "$fullisopath" | cut -f1`
+  usbsize=${sizebytes[$(($usbchoice-1))]}
+  if [ $usbsize -lt $isosize ]
+  then
+    echo ""
+    echo "Sorry. It won't fit! Exiting."
+    exit
+  fi
+
+  # Warn
+  usbinfo="${usbdev[$(($usbchoice-1))]} (${sizegb[$(($usbchoice-1))]}Gb ${vendor[$(($usbchoice-1))]} ${model[$(($usbchoice-1))]} found at ${found[$(($usbchoice-1))]})"
+  echo ""
+  echo -e "${bold}About to dump $fullisopath${endcolour}" 
+  echo -e "${bold}onto $usbinfo${endcolour}"
+  echo ""
+  echo "This will destroy any data already on the USB device."
+
+  # Confirm
+  while true
+  do
+    read -n1 -e -p "Press Y to confirm or Q to quit: " yq
+    case $yq in
+      [Qq] ) exit;;
+      [Yy] ) dothedeed
+	     break;;
+	 * ) echo -e "Invalid selection\n";;
+    esac
+  done
+}
+
+
+# Offer to skip rsync and just dump to usb
+echo ""
+while true
+do
+  read -n1 -e -p "Do you want to Rsync (R), skip Rsync and just dump to usb (D) or quit (Q): " rdq
+case $rdq in
+    [Rr] )  dorsync; dodump 1; exit;;
+    [Dd] )  findisos; dodump 0; exit;;
+    [Qq] )  exit;;
+       * )  echo " $rdq Invalid selection"; echo "";;
+  esac
+done 
+ 
