@@ -74,7 +74,8 @@ echo ""
 i=0
 OIFS="$IFS"
 IFS=$'\n'
-for line in $(find . -type f -name "*.iso" -printf '%P\n')
+# Sorted list with classic isos before live isos
+for line in $(find . -type f \( ! -name "*Live*" \) -and \( -name "Mageia*.iso" \) -printf '%P\n' | sort && find . -type f -name "Mageia*Live*.iso" -printf '%P\n' | sort)
 do
   directory[$i]=`dirname "$line"`
   iso[$i]=`basename "$line"`
@@ -255,7 +256,8 @@ findisos () {
   i=0
   OIFS="$IFS"
   IFS=$'\n'
-  for line in $(find . -type f -name "*.iso" -printf '%P\n')
+  # Sorted list with classic isos before live isos
+  for line in $(find . -type f \( ! -name "*Live*" \) -and \( -name "Mageia*.iso" \) -printf '%P\n' | sort && find . -type f -name "Mageia*Live*.iso" -printf '%P\n' | sort)
   do
     directory[$i]=`dirname "$line"`
     iso[$i]=`basename "$line"`
